@@ -5,12 +5,12 @@
 #include "LedControl.h"
 
 //======== FastLED stuff
-#define CHIPSET     DOTSTAR
-#define DATA_PIN     16
-#define CLOCK_PIN     15
-#define COLOR_ORDER BGR
+#define CHIPSET     WS2813
+#define DATA_PIN_1     15
+#define DATA_PIN_2     18
+#define COLOR_ORDER GRB
 #define SPI_SPEED     5
-#define NUM_LEDS    60
+#define NUM_LEDS    74
 #define BRIGHTNESS  50
 #define FRAMES_PER_SECOND 60
 
@@ -29,15 +29,15 @@ CRGBPalette16* gPalCurrent;
 void doSomething(void* context);
 
 //======== debounce stuff
-byte buttons[5] = { 2, 3, 4, 5, 6 };
+byte buttons[4] = { 1, 2, 4, 6 };
 Debounce Button0(buttons[0]);
 Debounce Button1(buttons[1]);
 Debounce Button2(buttons[2]);
 Debounce Button3(buttons[3]);
-Debounce Button4(buttons[4]);
-bool buttonStates[5] = { false, false, false, false, false };
+bool buttonStates[4] = { false, false, false, false };
+byte buttonLights[4] = { 0, 3, 5, 7 };
 
-byte toggles[4] = { 7, 8, 9, 10 };
+byte toggles[4] = { 8, 9, 16, 14 };
 Debounce Toggle0(toggles[0]);
 Debounce Toggle1(toggles[1]);
 Debounce Toggle2(toggles[2]);
@@ -60,12 +60,26 @@ uint32_t timerTicksBase, timerTicks1, timerTicks2;
 //======== 7-segment stuff
 LedControl lc = LedControl(19,20,21,1); //(MOSI, SCK, CS, Num devices)
 
+void lampTest(void);
+byte toggleValue, buttonValue,buttonLightsValue;
+
 void setup() {
+  
+  int i = 0;
+  
   delay(1000); // sanity delay
 
   timerTicksBase = 0;
   timerTicks1 = 0;
   timerTicks2 = 0;
+
+  //pinMode(9, OUTPUT); //heartbeat indicator.
+  for(i = 0; i < 4; i++)
+  {
+    pinMode(toggles[i], INPUT_PULLUP);
+    pinMode(buttons[i], INPUT_PULLUP);
+    pinMode(buttonLights[i], OUTPUT);
+  }
 
   lc.shutdown(0,false); //wakeup MAX7219
   lc.setIntensity(0,8); //set to medium brightness
@@ -74,8 +88,9 @@ void setup() {
   lc.setDigit(0,1,1,false);
   lc.setDigit(0,2,2,false);
   lc.setDigit(0,3,3,false);
-  
-  FastLED.addLeds<CHIPSET, DATA_PIN, CLOCK_PIN, COLOR_ORDER>(leds1, NUM_LEDS).setCorrection( TypicalLEDStrip );
+
+  FastLED.addLeds<CHIPSET, DATA_PIN_1, COLOR_ORDER>(leds1, NUM_LEDS).setCorrection( TypicalLEDStrip );
+  FastLED.addLeds<CHIPSET, DATA_PIN_2, COLOR_ORDER>(leds2, NUM_LEDS).setCorrection( TypicalLEDStrip );
   brightnessValue = BRIGHTNESS;
   FastLED.setBrightness(brightnessValue);
 
@@ -100,30 +115,16 @@ void setup() {
   colorMode = 1;
 
   CRGB colorInit;
-  colorInit = ColorFromPalette( gPal0, 0);
-  for(int i = 0; i < (NUM_LEDS*2); i++)
+  //colorInit = ColorFromPalette( gPal0, 0);
+  colorInit = CRGB::Black;
+  for(i = 0; i < (NUM_LEDS); i++)
   {
     leds1[i] = colorInit;
   }
   FastLED.show();
-
-  //pinMode(9, OUTPUT); //heartbeat indicator.
-  for(int i = 0; i < sizeof(buttons); i++)
-  {
-    pinMode(buttons[i], INPUT_PULLUP);
-  }
   
-  for(int i = 0; i < sizeof(toggles); i++)
-  {
-    pinMode(toggles[i], INPUT_PULLUP);
-  }
-
-  digitalWrite(en_blower, 0);
-  digitalWrite(en_vape, 0);
-  pinMode(en_blower, OUTPUT);
-  pinMode(en_vape, OUTPUT);
-
   //tickEvent = t.every((1000/60), doSomething, (void*)2);
+
 
   // initialize timer1 
   noInterrupts();
@@ -136,6 +137,7 @@ void setup() {
   TCCR1B |= (1 << CS12);    // 256 prescaler 
   TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
   interrupts();             // enable all interrupts
+  
 }
 
 
@@ -160,6 +162,8 @@ ISR(TIMER1_COMPA_vect)
 void loop()
 {
 
+  //lampTest();
+
   t.update(); //update timer.
   
   //read pin states.
@@ -178,10 +182,6 @@ void loop()
       sparkingValue = 192;
       brightnessValue = 0;
       FastLED.setBrightness(brightnessValue);
-
-      //also turn off smoke.
-      digitalWrite(en_blower, 0);
-      digitalWrite(en_vape, 0);
       break;
 
       case 1: //Fire.
@@ -245,7 +245,7 @@ void loop()
   {
     random16_add_entropy(random());
 
-    if(colorMode == 3)
+    if(colorMode == 3) //rotate hue with each frame.
     {
       static uint8_t hue = 0;
       hue++;
@@ -267,7 +267,7 @@ void loop()
 
     timerTicks2 = 0; //reset this timer.
   }
-  
+
 }
 
 void Fire2012WithPalette()
@@ -328,8 +328,45 @@ void Fire2012WithPalette()
     }
     
     leds1[pixelnumber] = color;
-    //leds1[pixelnumber+NUM_LEDS] = color; //we hack in a copy of the first strip data into the second strip.
+    leds2[pixelnumber] = color; //we hack in a copy of the first strip data into the second strip.
   }
 }
 
+void lampTest(void)
+{ 
+int i = 0;
+  
+  //while(1)
+  //{
+    toggleValue = 0;
+    
+    for(i = 0; i < 4; i++)
+    {
+      toggleValue |= digitalRead(toggles[i]);
+      toggleValue <<= 1;
+    }
+
+    buttonValue = 0;
+
+    for(i = 0; i < 4; i++)
+    {
+      buttonValue |= digitalRead(buttons[i]);
+      buttonValue <<= 1;
+    }
+  
+    //toggleValue = (Toggle0.read() & 0x01) + (Toggle1.read() << 1) + (Toggle2.read() << 2) + (Toggle3.read() << 3);
+    //buttonValue = Button0.read() + (Button1.read() << 1) + (Button2.read() << 2) + (Button3.read() << 3);
+    buttonLightsValue = 0xFF; //buttonValue;
+    
+    //lc.setDigit(0,0,toggleValue,false);
+    //lc.setDigit(0,1,buttonValue,false);
+
+    for(i = 0; i < 4; i++)
+    {
+      digitalWrite(buttonLights[i], (buttonLightsValue & 0x01));
+      buttonLightsValue >> 1;
+    }
+    
+  //}
+}
 
