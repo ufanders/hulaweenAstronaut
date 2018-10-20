@@ -1,3 +1,10 @@
+#include <Ala.h>
+#include <AlaLed.h>
+#include <AlaLedRgb.h>
+#include <ExtNeoPixel.h>
+#include <ExtTlc5940.h>
+#include <ExtTlc5940Config.h>
+
 #include <Event.h>
 #include <Timer.h>
 #include <Debounce.h>
@@ -28,40 +35,41 @@ CRGBPalette16* gPalCurrent;
 
 void doSomething(void* context);
 
-//======== debounce stuff
-byte buttons[4] = { 1, 2, 4, 6 };
+//======== UI stuff.
+const byte buttons[4] = { 1, 2, 4, 6 };
 Debounce Button0(buttons[0]);
 Debounce Button1(buttons[1]);
 Debounce Button2(buttons[2]);
 Debounce Button3(buttons[3]);
 bool buttonStates[4] = { false, false, false, false };
-byte buttonLights[4] = { 0, 3, 5, 7 };
+byte buttonReg;
+const byte buttonLights[4] = { 0, 3, 5, 7 };
 
-byte toggles[4] = { 8, 9, 16, 14 };
+const byte toggles[4] = { 8, 9, 16, 14 };
 Debounce Toggle0(toggles[0]);
 Debounce Toggle1(toggles[1]);
 Debounce Toggle2(toggles[2]);
 Debounce Toggle3(toggles[3]);
 bool toggleStates[4] = { false, false, false, false };
+byte toggleReg;
+
+void lampTest(void);
+byte toggleValue, buttonValue, buttonLightsValue;
+const byte potPin = 10;
+short potState;
 
 //======== timer stuff.
 Timer t;
-int smokeEvent;
-int vapeEvent;
+int flashEvent;
 int tickEvent;
 
 //======== control stuff
-byte en_blower = 15;
-byte en_vape = 14;
 byte colorMode = 0;
 byte smokeFlag = 0;
 uint32_t timerTicksBase, timerTicks1, timerTicks2;
 
 //======== 7-segment stuff
 LedControl lc = LedControl(19,20,21,1); //(MOSI, SCK, CS, Num devices)
-
-void lampTest(void);
-byte toggleValue, buttonValue,buttonLightsValue;
 
 void setup() {
   
@@ -80,6 +88,7 @@ void setup() {
     pinMode(buttons[i], INPUT_PULLUP);
     pinMode(buttonLights[i], OUTPUT);
   }
+  pinMode(potPin, INPUT);
 
   lc.shutdown(0,false); //wakeup MAX7219
   lc.setIntensity(0,8); //set to medium brightness
@@ -120,11 +129,11 @@ void setup() {
   for(i = 0; i < (NUM_LEDS); i++)
   {
     leds1[i] = colorInit;
+    leds2[i] = colorInit;
   }
   FastLED.show();
   
   //tickEvent = t.every((1000/60), doSomething, (void*)2);
-
 
   // initialize timer1 
   noInterrupts();
@@ -137,6 +146,8 @@ void setup() {
   TCCR1B |= (1 << CS12);    // 256 prescaler 
   TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
   interrupts();             // enable all interrupts
+
+  Serial.begin(115200);
   
 }
 
@@ -161,61 +172,139 @@ ISR(TIMER1_COMPA_vect)
  
 void loop()
 {
+  byte changedControls;
+  short changedValue;
+  bool animationChange;
+  bool variableChange;
 
-  //lampTest();
+  animationChange = false;
+  variableChange = false;
 
   t.update(); //update timer.
-  
-  //read pin states.
-  if(!Button0.read() && buttonStates[0] == false)
+
+  changedControls = getControls(0b111);
+
+  if(changedControls & 0b010) //engage selected variable for adjustment.
   {
-    //LED mode button pushed.
-    buttonStates[0] = true;
+    toggleReg = toggleStates[0] | (toggleStates[1] << 1) | (toggleStates[2] << 2) | (toggleStates[3] << 3);
+    toggleReg = toggleReg & 0x0F;
+    Serial.print("toggles=");
+    Serial.println(toggleReg, HEX);
     
-    colorMode++;
-    if(colorMode > 3) colorMode = 0;
+  }
 
-    switch(colorMode)
+  if(changedControls & 0b100) //adjust selected variable.
+  {
+    Serial.print("pot=");
+    Serial.println(potState, HEX);
+    
+    switch(toggleReg)
     {
-      case 0: //LEDs off.
-      coolingValue = 55;
-      sparkingValue = 192;
-      brightnessValue = 0;
-      FastLED.setBrightness(brightnessValue);
-      break;
+      case 1: //LED brightness.
+        brightnessValue = map(potState, 0, 1023, 0, 100); //0-100.
+        changedValue = brightnessValue;
+        animationChange = true;
+        break;
 
-      case 1: //Fire.
-      coolingValue = 55;
-      sparkingValue = 100;
-      brightnessValue = 96;
-      FastLED.setBrightness(brightnessValue);
-      break;
+      case 2: //Fire-effect cooling value.
+        coolingValue = map(potState, 0, 1023, 0, 255); //0-255.
+        changedValue = coolingValue;
+        animationChange = true;
+        break;
+      
+      case 0:
+      default:
+        break;
+    }
 
-      case 2: //MDMA fire.
-      coolingValue = 55;
-      sparkingValue = 160;
-      brightnessValue = 192;
-      FastLED.setBrightness(brightnessValue);
-      break;
-
-      case 3: //FREAK OUT
-      coolingValue = 55;
-      sparkingValue = 192;
-      brightnessValue = 255;
-      FastLED.setBrightness(brightnessValue);
-      break;
+    if(toggleReg)
+    {
+      //update display with adjusted value.
+      lc.setDigit(0,0,(changedValue%10),false);
+      lc.setDigit(0,1,((changedValue/10)%10),false);
+      lc.setDigit(0,2,((changedValue/100)%10),false);
+      lc.setDigit(0,3,(changedValue/1000),false);
     }
   }
 
+  if(changedControls & 0b001) //change operating mode.
+  {
+    buttonReg = buttonStates[0] | (buttonStates[1] << 1) | (buttonStates[2] << 2) | (buttonStates[3] << 3);
+    buttonReg = ~buttonReg & 0x0F; //invert button logic.
+    Serial.print("buttons=");
+    Serial.println(buttonReg, HEX);
+    
+    animationChange = true;
+
+    if(buttonReg == 0b0000) t.stop(flashEvent); //stop previous button flash.
+  }
+
+  //read button states.
+  if(animationChange)
+  {
+    if(toggleReg & 0b0001) FastLED.setBrightness(brightnessValue);
+
+    if(buttonReg == 0b0001)
+    {
+      //LED mode button pushed.
+      //buttonStates[0] = true;
+      
+      colorMode++;
+      if(colorMode > 3) colorMode = 0;
+  
+      switch(colorMode)
+      {
+        case 0: //LEDs off.
+        coolingValue = 55;
+        sparkingValue = 192;
+        brightnessValue = 0;
+        FastLED.setBrightness(brightnessValue);
+        break;
+  
+        case 1: //Fire.
+        coolingValue = 55;
+        sparkingValue = 100;
+        brightnessValue = 96;
+        FastLED.setBrightness(brightnessValue);
+        break;
+  
+        case 2: //MDMA fire.
+        coolingValue = 55;
+        sparkingValue = 160;
+        brightnessValue = 192;
+        FastLED.setBrightness(brightnessValue);
+        break;
+  
+        case 3: //FREAK OUT
+        coolingValue = 55;
+        sparkingValue = 192;
+        brightnessValue = 255;
+        FastLED.setBrightness(brightnessValue);
+        break;
+      }
+  
+      flashEvent = t.oscillate(buttonLights[0], 1000, HIGH);
+    }
+  }
+/*
+  if(animationChange && !buttonStates[0])
+  {
+    
+  }
+  */
+
+  /*
   if(Button0.read())
   {
     buttonStates[0] = false;
   }
-
-  if(!Button1.read() && buttonStates[1] == false)
+  */
+  
+ /* 
+  if(!buttonStates[1])
   {
     //smoke mode button pushed.
-    buttonStates[1] = true;
+    //buttonStates[1] = true;
 
     smokeFlag ^= 1; //toggle smoke flag.
 
@@ -232,12 +321,16 @@ void loop()
       digitalWrite(en_blower, 0);
       digitalWrite(en_vape, 0);
     }
+    
   }
-
+  */
+  
+  /*
   if(Button1.read())
   {
     buttonStates[1] = false;
   }
+  */
   
   //bottom half of ISR.
 
@@ -334,10 +427,7 @@ void Fire2012WithPalette()
 
 void lampTest(void)
 { 
-int i = 0;
-  
-  //while(1)
-  //{
+    int i = 0;
     toggleValue = 0;
     
     for(i = 0; i < 4; i++)
@@ -366,7 +456,62 @@ int i = 0;
       digitalWrite(buttonLights[i], (buttonLightsValue & 0x01));
       buttonLightsValue >> 1;
     }
+}
+
+byte getControls(byte controlsMask)
+{
+  #define HYSTERESIS_STATIC 25 //crude bump filter.
+  #define HYSTERESIS_DYNAMIC 10 //crude noise filter.
+  
+  byte changed = 0;
+  bool currentStates[sizeof(buttonStates)];
+  short currentValue;
+
+  if(controlsMask & 0b001) //poll buttons.
+  {
+      currentStates[0] = Button0.read();
+      currentStates[1] = Button1.read();
+      currentStates[2] = Button2.read();
+      currentStates[3] = Button3.read();
+
+    for(int i=0; i < sizeof(buttonStates); i++)
+    {
+      if(currentStates[i] != buttonStates[i])
+      {
+        buttonStates[i] = currentStates[i];
+        changed |= 0b001;
+      }
+    }
+  }
+
+  if(controlsMask & 0b010) //poll toggles.
+  {
+      currentStates[0] = Toggle0.read();
+      currentStates[1] = Toggle1.read();
+      currentStates[2] = Toggle2.read();
+      currentStates[3] = Toggle3.read();
+
+    for(int i=0; i < sizeof(buttonStates); i++)
+    {
+      if(currentStates[i] != toggleStates[i])
+      {
+        toggleStates[i] = currentStates[i];
+        changed |= 0b010;
+      }
+    }
+  }
+
+  if(controlsMask & 0b100) //poll pot.
+  {
+    currentValue = analogRead(potPin);
     
-  //}
+    if( (currentValue < potState - HYSTERESIS_DYNAMIC) || (currentValue > potState + HYSTERESIS_DYNAMIC) )
+    {
+      potState = currentValue;
+      changed |= 0b100;
+    }
+  }
+  
+  return changed;
 }
 
