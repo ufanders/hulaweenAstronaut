@@ -1,10 +1,3 @@
-#include <Ala.h>
-#include <AlaLed.h>
-#include <AlaLedRgb.h>
-#include <ExtNeoPixel.h>
-#include <ExtTlc5940.h>
-#include <ExtTlc5940Config.h>
-
 #include <Event.h>
 #include <Timer.h>
 #include <Debounce.h>
@@ -32,8 +25,6 @@ CRGBPalette16 gPal1;
 CRGBPalette16 gPal2;
 CRGBPalette16 gPal3;
 CRGBPalette16* gPalCurrent;
-
-void doSomething(void* context);
 
 //======== UI stuff.
 const byte buttons[4] = { 1, 2, 4, 6 };
@@ -67,9 +58,28 @@ int tickEvent;
 byte colorMode = 0;
 byte smokeFlag = 0;
 uint32_t timerTicksBase, timerTicks1, timerTicks2;
+byte currentProgram;
 
 //======== 7-segment stuff
 LedControl lc = LedControl(19,20,21,1); //(MOSI, SCK, CS, Num devices)
+
+//======== Ripple stuff.
+int color;
+int center = 0;
+int step = -1;
+int maxSteps = 16;
+float fadeRate = 0.8;
+int diff;
+uint32_t currentBg = random(256);
+uint32_t nextBg = currentBg;
+
+//======== Noise stuff.
+static uint16_t dist;         // A random number for our noise generator.
+uint16_t scale = 30;          // Wouldn't recommend changing this on the fly, or the animation will be really blocky.
+uint8_t maxChanges = 48;      // Value for blending between palettes.
+ 
+CRGBPalette16 currentPalette(CRGB::Black);
+CRGBPalette16 targetPalette(OceanColors_p);
 
 void setup() {
   
@@ -121,19 +131,13 @@ void setup() {
 
   coolingValue = 55;
   sparkingValue = 120;
-  colorMode = 1;
+  colorMode = 0;
 
-  CRGB colorInit;
-  //colorInit = ColorFromPalette( gPal0, 0);
-  colorInit = CRGB::Black;
-  for(i = 0; i < (NUM_LEDS); i++)
-  {
-    leds1[i] = colorInit;
-    leds2[i] = colorInit;
-  }
-  FastLED.show();
-  
-  //tickEvent = t.every((1000/60), doSomething, (void*)2);
+  FastLED.clear();
+
+  dist = random16(12345); // A semi-random number for our noise generator
+
+  currentProgram = 0;
 
   // initialize timer1 
   noInterrupts();
@@ -141,7 +145,7 @@ void setup() {
   TCCR1B = 0;
   TCNT1  = 0;
 
-  OCR1A = 1092; //60Hz //31250; // compare match register 16MHz/256/2Hz
+  OCR1A = 1092; //compare match reg = 60Hz 
   TCCR1B |= (1 << WGM12);   // CTC mode
   TCCR1B |= (1 << CS12);    // 256 prescaler 
   TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
@@ -153,16 +157,12 @@ void setup() {
 
 
 ISR(TIMER1_COMPA_vect)
-//void doSomething(void* context)
 {
   //top half of ISR.
   
   timerTicksBase++;
 
-  if(1) //timerTicksBase % 100)
-  {
-    timerTicks1++;
-  }
+  timerTicks1++;
 
   if(timerTicksBase == 100) timerTicksBase = 0; //reset timebase.
   
@@ -174,10 +174,10 @@ void loop()
 {
   byte changedControls;
   short changedValue;
-  bool animationChange;
+  bool programChange;
   bool variableChange;
 
-  animationChange = false;
+  programChange = false;
   variableChange = false;
 
   t.update(); //update timer.
@@ -190,31 +190,55 @@ void loop()
     toggleReg = toggleReg & 0x0F;
     Serial.print("toggles=");
     Serial.println(toggleReg, HEX);
-    
   }
 
   if(changedControls & 0b100) //adjust selected variable.
   {
     Serial.print("pot=");
     Serial.println(potState, HEX);
-    
-    switch(toggleReg)
+
+    switch(currentProgram)
     {
-      case 1: //LED brightness.
-        brightnessValue = map(potState, 0, 1023, 0, 100); //0-100.
-        changedValue = brightnessValue;
-        animationChange = true;
+      case 0b0001: //Fire program.
+        switch(toggleReg)
+        {
+          case 1: //LED brightness.
+            brightnessValue = map(potState, 0, 1023, 0, 100); //0-100.
+            changedValue = brightnessValue;
+            FastLED.setBrightness(brightnessValue);
+            //variableChange = true;
+            break;
+    
+          case 2: //Fire-effect cooling value.
+            coolingValue = map(potState, 0, 1023, 0, 255); //0-255.
+            changedValue = coolingValue;
+            variableChange = true;
+            break;
+          
+          case 0:
+          default:
+            break;
+        }
         break;
 
-      case 2: //Fire-effect cooling value.
-        coolingValue = map(potState, 0, 1023, 0, 255); //0-255.
-        changedValue = coolingValue;
-        animationChange = true;
-        break;
-      
-      case 0:
-      default:
-        break;
+        case 0b0010: //Ripple program.
+          switch(toggleReg)
+          {
+            case 1: //LED brightness.
+              brightnessValue = map(potState, 0, 1023, 0, 100); //0-100.
+              changedValue = brightnessValue;
+              FastLED.setBrightness(brightnessValue);
+              variableChange = true;
+              break;
+            
+            case 0:
+            default:
+              break;
+          }
+          break;
+
+        default:
+          break;
     }
 
     if(toggleReg)
@@ -227,131 +251,165 @@ void loop()
     }
   }
 
-  if(changedControls & 0b001) //change operating mode.
+  if(changedControls & 0b001) //change program.
   {
     buttonReg = buttonStates[0] | (buttonStates[1] << 1) | (buttonStates[2] << 2) | (buttonStates[3] << 3);
     buttonReg = ~buttonReg & 0x0F; //invert button logic.
     Serial.print("buttons=");
     Serial.println(buttonReg, HEX);
-    
-    animationChange = true;
 
-    if(buttonReg == 0b0000) t.stop(flashEvent); //stop previous button flash.
+    //if we have pressed another button, change the program.
+    if( (buttonReg != 0b0000) && (currentProgram != buttonReg) )
+    {
+      currentProgram = buttonReg;
+      FastLED.clear();
+      FastLED.show();
+      
+      //init program.
+      switch(currentProgram)
+      {
+        case 0b0001:
+          OCR1A = 1092; //60Hz refresh.
+          break;
+
+        case 0b0010:
+          OCR1A = 3276; //20Hz refresh.
+          break;
+      }
+    }
+
+    //display program number.
+    byte progNum;
+    progNum = (currentProgram/2);
+    if(progNum == 0) progNum = 1;
+
+    lc.setDigit(0,6,progNum,false);
+    lc.setChar(0,7,'p',false);
+    
+    programChange = true;
   }
 
   //read button states.
-  if(animationChange)
+  if(programChange)
   {
-    if(toggleReg & 0b0001) FastLED.setBrightness(brightnessValue);
-
-    if(buttonReg == 0b0001)
+    //process program changes.
+    if(currentProgram == 0b0001 && buttonReg == 0b0001) //Fire program.
     {
-      //LED mode button pushed.
-      //buttonStates[0] = true;
-      
       colorMode++;
       if(colorMode > 3) colorMode = 0;
   
       switch(colorMode)
       {
         case 0: //LEDs off.
-        coolingValue = 55;
-        sparkingValue = 192;
-        brightnessValue = 0;
-        FastLED.setBrightness(brightnessValue);
-        break;
+          FastLED.clear();
+          FastLED.show();
+          break;
   
         case 1: //Fire.
-        coolingValue = 55;
-        sparkingValue = 100;
-        brightnessValue = 96;
-        FastLED.setBrightness(brightnessValue);
-        break;
+          coolingValue = 55;
+          sparkingValue = 100;
+          brightnessValue = 96;
+          FastLED.setBrightness(brightnessValue);
+          break;
   
         case 2: //MDMA fire.
-        coolingValue = 55;
-        sparkingValue = 160;
-        brightnessValue = 192;
-        FastLED.setBrightness(brightnessValue);
-        break;
+          coolingValue = 55;
+          sparkingValue = 160;
+          brightnessValue = 192;
+          FastLED.setBrightness(brightnessValue);
+          break;
   
         case 3: //FREAK OUT
-        coolingValue = 55;
-        sparkingValue = 192;
-        brightnessValue = 255;
-        FastLED.setBrightness(brightnessValue);
-        break;
+          coolingValue = 55;
+          sparkingValue = 192;
+          brightnessValue = 255;
+          FastLED.setBrightness(brightnessValue);
+          break;
+
+        default:
+          break;
       }
-  
-      flashEvent = t.oscillate(buttonLights[0], 1000, HIGH);
     }
-  }
-/*
-  if(animationChange && !buttonStates[0])
-  {
-    
-  }
-  */
 
-  /*
-  if(Button0.read())
-  {
-    buttonStates[0] = false;
-  }
-  */
-  
- /* 
-  if(!buttonStates[1])
-  {
-    //smoke mode button pushed.
-    //buttonStates[1] = true;
-
-    smokeFlag ^= 1; //toggle smoke flag.
-
-    if(smokeFlag)
+    if(currentProgram == 0b0010 && buttonReg == 0b0001) //Ripple program.
     {
-      smokeEvent = t.oscillate(en_blower, 15000, HIGH);
-      vapeEvent = t.oscillate(en_vape, 15000, HIGH);
+      
+    }
+
+    if(currentProgram == 0b0100 && buttonReg == 0b0001) //Noise program.
+    {
+      
+    }
+    
+    //change button illumination.
+    t.stop(flashEvent);
+    for(int i = 0; i < sizeof(buttonLights); i++)
+    {
+      digitalWrite(buttonLights[i], 0);
+    }
+    
+    if(currentProgram == 0b1000)
+    {
+      flashEvent = t.oscillate(buttonLights[3], 1000, HIGH);
     }
     else
     {
-      t.stop(smokeEvent);
-      t.stop(vapeEvent);
-
-      digitalWrite(en_blower, 0);
-      digitalWrite(en_vape, 0);
+      flashEvent = t.oscillate(buttonLights[(currentProgram/2)], 1000, HIGH);
     }
     
+    programChange = false;
   }
-  */
   
-  /*
-  if(Button1.read())
+  if((timerTicks1 >= 1)) //bottom half of ISR.
   {
-    buttonStates[1] = false;
-  }
-  */
-  
-  //bottom half of ISR.
-
-  if((timerTicks1 >= 1)) //draw video frame.
-  {
-    random16_add_entropy(random());
-
-    if(colorMode == 3) //rotate hue with each frame.
+    if(currentProgram == 0b0001) //Fire program.
     {
-      static uint8_t hue = 0;
-      hue++;
-      CRGB darkcolor  = CHSV(hue,255,192); // pure hue, three-quarters brightness
-      CRGB lightcolor = CHSV(hue,128,255); // half 'whitened', full brightness
-      gPal3 = CRGBPalette16( CRGB::Black, darkcolor, lightcolor, CRGB::White);
-    }
-  
-    Fire2012WithPalette(); // run simulation frame, using palette colors
+      if(colorMode != 0)
+      {
+        random16_add_entropy(random());
     
-    FastLED.show(); // display this frame
+        if(colorMode == 3) //rotate hue with each frame.
+        {
+          static uint8_t hue = 0;
+          hue++;
+          CRGB darkcolor  = CHSV(hue,255,192); // pure hue, three-quarters brightness
+          CRGB lightcolor = CHSV(hue,128,255); // half 'whitened', full brightness
+          gPal3 = CRGBPalette16( CRGB::Black, darkcolor, lightcolor, CRGB::White);
+        }
+      
+        Fire2012WithPalette(); // run simulation frame, using palette colors
+        
+        FastLED.show(); // display this frame
+      }
+    }
+
+    if(currentProgram == 0b0010) //Ripple program.
+    {
+      ripple();
+    }
+
+    if(currentProgram == 0b0100) //Noise program.
+    {
+      // Taken care of in main loop - uses system software timing.
+    }
     
     timerTicks1 = 0; //reset this timer.
+  }
+
+  if(currentProgram == 0b0100) //Noise program.
+  {
+    EVERY_N_MILLISECONDS(10) 
+    {
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);  // Blend towards the target palette
+      fillnoise8(); // Update the LED array with noise at the new location
+    }
+
+    EVERY_N_SECONDS(5)
+    {  // Change the target palette to a random one every 5 seconds.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128,255)), CHSV(random8(), 255, random8(128,255)), CHSV(random8(), 192, random8(128,255)), CHSV(random8(), 255, random8(128,255)));
+    }
+
+    LEDS.show();
   }
 
   if(timerTicks2 == 10)
@@ -425,6 +483,7 @@ void Fire2012WithPalette()
   }
 }
 
+/*
 void lampTest(void)
 { 
     int i = 0;
@@ -457,6 +516,7 @@ void lampTest(void)
       buttonLightsValue >> 1;
     }
 }
+*/
 
 byte getControls(byte controlsMask)
 {
@@ -515,3 +575,74 @@ byte getControls(byte controlsMask)
   return changed;
 }
 
+void ripple() {
+ 
+    if (currentBg == nextBg) {
+      nextBg = random(256);
+    }
+    else if (nextBg > currentBg) {
+      currentBg++;
+    } else {
+      currentBg--;
+    }
+    for(uint16_t l = 0; l < NUM_LEDS; l++) {
+      leds1[l] = CHSV(currentBg, 255, 50);
+      leds2[l] = leds1[l];
+    }
+ 
+  if (step == -1) {
+    center = random(NUM_LEDS);
+    color = random(256);
+    step = 0;
+  }
+ 
+  if (step == 0) {
+    leds1[center] = CHSV(color, 255, 255);
+    leds2[center] = leds1[center];
+    step ++;
+  }
+  else {
+    if (step < maxSteps) {
+      //Serial.println(pow(fadeRate,step));
+ 
+      leds1[wrap(center + step)] = CHSV(color, 255, pow(fadeRate, step)*255);
+      leds2[wrap(center + step)] = leds1[wrap(center + step)];
+      leds1[wrap(center - step)] = CHSV(color, 255, pow(fadeRate, step)*255);
+      leds2[wrap(center - step)] = leds1[wrap(center - step)];
+      if (step > 3) {
+        leds1[wrap(center + step - 3)] = CHSV(color, 255, pow(fadeRate, step - 2)*255);
+        leds2[wrap(center + step - 3)] = leds1[wrap(center + step - 3)];
+        leds1[wrap(center - step + 3)] = CHSV(color, 255, pow(fadeRate, step - 2)*255);
+        leds2[wrap(center - step + 3)] = leds1[wrap(center - step + 3)];
+      }
+      step ++;
+    }
+    else {
+      step = -1;
+    }
+  }
+ 
+  LEDS.show();
+}
+
+int wrap(int step) {
+  if(step < 0) return NUM_LEDS + step;
+  if(step > NUM_LEDS - 1) return step - NUM_LEDS;
+  return step;
+}
+ 
+void one_color_allHSV(int ahue, int abright) {                // SET ALL LEDS TO ONE COLOR (HSV)
+  for (int i = 0 ; i < NUM_LEDS; i++ ) {
+    leds1[i] = CHSV(ahue, 255, abright);
+  }
+}
+
+void fillnoise8() {
+  for(int i = 0; i < NUM_LEDS; i++) {                                      // Just ONE loop to fill up the LED array as all of the pixels change.
+    uint8_t index = inoise8(i*scale, dist+i*scale) % 255;                  // Get a value from the noise function. I'm using both x and y axis.
+    leds1[i] = ColorFromPalette(currentPalette, index, 255, LINEARBLEND);   // With that value, look up the 8 bit colour palette value and assign it to the current LED.
+    leds2[i] = leds1[i];
+  }
+  dist += beatsin8(10,1, 4);                                               // Moving along the distance (that random number we started out with). Vary it a bit with a sine wave.
+                                                                           // In some sketches, I've used millis() instead of an incremented counter. Works a treat.
+} // fillnoise8()
