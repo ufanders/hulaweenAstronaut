@@ -81,6 +81,21 @@ uint8_t maxChanges = 48;      // Value for blending between palettes.
 CRGBPalette16 currentPalette(CRGB::Black);
 CRGBPalette16 targetPalette(OceanColors_p);
 
+//======== Lightning stuff.
+uint8_t frequency = 50; // controls the interval between strikes
+uint8_t flashes = 8; //the upper limit of flashes per strike
+unsigned int dimmer = 1;
+uint8_t ledstart; // Starting location of a flash
+uint8_t ledlen; // Length of a flash
+
+//======== Plasma stuff.
+// Use qsuba for smooth pixel colouring and qsubd for non-smooth pixel colouring
+#define qsubd(x, b)  ((x>b)?b:0) // Digital unsigned subtraction macro. if result <0, then => 0. Otherwise, take on fixed value.
+#define qsuba(x, b)  ((x>b)?x-b:0) // Analog Unsigned subtraction macro. if result <0, then => 0
+CRGBPalette16 currentPalette2; // Palette definitions
+CRGBPalette16 targetPalette2;
+TBlendType currentBlending = LINEARBLEND;
+
 void setup() {
   
   int i = 0;
@@ -152,7 +167,6 @@ void setup() {
   interrupts();             // enable all interrupts
 
   Serial.begin(115200);
-  
 }
 
 
@@ -275,6 +289,10 @@ void loop()
         case 0b0010:
           OCR1A = 3276; //20Hz refresh.
           break;
+
+        case 0b0100:
+        default:
+          break;
       }
     }
 
@@ -331,14 +349,15 @@ void loop()
       }
     }
 
-    if(currentProgram == 0b0010 && buttonReg == 0b0001) //Ripple program.
+    if(currentProgram == 0b0010 && buttonReg == 0b0010) //Ripple program.
     {
+      //cycle through different modes.
       
     }
 
-    if(currentProgram == 0b0100 && buttonReg == 0b0001) //Noise program.
+    if(currentProgram == 0b0100 && buttonReg == 0b0100) //Noise program.
     {
-      
+      //cycle through different modes.
     }
     
     //change button illumination.
@@ -360,7 +379,7 @@ void loop()
     programChange = false;
   }
   
-  if((timerTicks1 >= 1)) //bottom half of ISR.
+  if((timerTicks1 >= 1)) //bottom half of ISR start.
   {
     if(currentProgram == 0b0001) //Fire program.
     {
@@ -394,23 +413,15 @@ void loop()
     }
     
     timerTicks1 = 0; //reset this timer.
-  }
+  } //bottom half of ISR end.
 
+  //software timed loop start.
   if(currentProgram == 0b0100) //Noise program.
   {
-    EVERY_N_MILLISECONDS(10) 
-    {
-      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);  // Blend towards the target palette
-      fillnoise8(); // Update the LED array with noise at the new location
-    }
-
-    EVERY_N_SECONDS(5)
-    {  // Change the target palette to a random one every 5 seconds.
-      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128,255)), CHSV(random8(), 255, random8(128,255)), CHSV(random8(), 192, random8(128,255)), CHSV(random8(), 255, random8(128,255)));
-    }
-
-    LEDS.show();
-  }
+    noise();
+    //lightning();
+    //plasma();
+  } //software timed loop end.
 
   if(timerTicks2 == 10)
   {
@@ -638,6 +649,7 @@ void one_color_allHSV(int ahue, int abright) {                // SET ALL LEDS TO
 }
 
 void fillnoise8() {
+  
   for(int i = 0; i < NUM_LEDS; i++) {                                      // Just ONE loop to fill up the LED array as all of the pixels change.
     uint8_t index = inoise8(i*scale, dist+i*scale) % 255;                  // Get a value from the noise function. I'm using both x and y axis.
     leds1[i] = ColorFromPalette(currentPalette, index, 255, LINEARBLEND);   // With that value, look up the 8 bit colour palette value and assign it to the current LED.
@@ -646,3 +658,81 @@ void fillnoise8() {
   dist += beatsin8(10,1, 4);                                               // Moving along the distance (that random number we started out with). Vary it a bit with a sine wave.
                                                                            // In some sketches, I've used millis() instead of an incremented counter. Works a treat.
 } // fillnoise8()
+
+void lightning(void)
+{
+  ledstart = random8(NUM_LEDS);                               // Determine starting location of flash
+  ledlen = random8(NUM_LEDS-ledstart);                        // Determine length of flash (not to go beyond NUM_LEDS-1)
+  
+  for (int flashCounter = 0; flashCounter < random8(3,flashes); flashCounter++)
+  {
+    if(flashCounter == 0) dimmer = 5;                         // the brightness of the leader is scaled down by a factor of 5
+    else dimmer = random8(1,3);                               // return strokes are brighter than the leader
+    
+    fill_solid(leds1+ledstart,ledlen,CHSV(255, 0, 255/dimmer));
+    fill_solid(leds2+ledstart,ledlen,CHSV(255, 0, 255/dimmer));
+    FastLED.show(); // Show a section of LEDs
+    
+    delay(random8(4,10));                                     // each flash only lasts 4-10 milliseconds
+    fill_solid(leds1+ledstart,ledlen,CHSV(255,0,0));          // Clear the section of LED's
+    fill_solid(leds2+ledstart,ledlen,CHSV(255,0,0)); 
+    FastLED.show();
+    
+    if (flashCounter == 0) delay (150);                       // longer delay until next flash after the leader
+    
+    delay(50+random8(100));                                   // shorter delay between strokes  
+  } // for()
+  
+  delay(random8(frequency)*100);                              // delay between strikes
+}
+
+void plasma() {
+
+  EVERY_N_MILLISECONDS(50) {                                  // FastLED based non-blocking delay to update/display the sequence.
+    plasmaInner();
+  }
+
+  EVERY_N_MILLISECONDS(100) {
+    uint8_t maxChanges = 24; 
+    nblendPaletteTowardPalette(currentPalette2, targetPalette2, maxChanges);   // AWESOME palette blending capability.
+  }
+
+  EVERY_N_SECONDS(5) {                                 // Change the target palette to a random one every 5 seconds.
+    uint8_t baseC = random8();                         // You can use this as a baseline colour if you want similar hues in the next line.
+    targetPalette2 = CRGBPalette16(CHSV(baseC+random8(32), 192, random8(128,255)), CHSV(baseC+random8(32), 255, random8(128,255)), CHSV(baseC+random8(32), 192, random8(128,255)), CHSV(baseC+random8(32), 255, random8(128,255)));
+  }
+}
+
+void plasmaInner() // This is the heart of this program. Sure is short. . . and fast.
+{
+  int thisPhase = beatsin8(6,-64,64); // Setting phase change for a couple of waves.
+  int thatPhase = beatsin8(7,-64,64);
+
+  for (int k=0; k<NUM_LEDS; k++) // For each of the LEDs in the strand, set a brightness based on a wave as follows:
+  {
+    int colorIndex = cubicwave8((k*23)+thisPhase)/2 + cos8((k*15)+thatPhase)/2;           // Create a wave and add a phase change and add another wave with its own phase change.. Hey, you can even change the frequencies if you wish.
+    int thisBright = qsuba(colorIndex, beatsin8(7,0,96));                                 // qsub gives it a bit of 'black' dead space by setting sets a minimum value. If colorIndex < current value of beatsin8(), then bright = 0. Otherwise, bright = colorIndex..
+
+    leds1[k] = ColorFromPalette(currentPalette2, colorIndex, thisBright, currentBlending);  // Let's now add the foreground colour.
+    leds2[k] = leds2[k];
+  }
+
+  FastLED.show();
+}
+
+void noise(void)
+{
+  EVERY_N_MILLISECONDS(10) 
+    {
+      nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);  // Blend towards the target palette
+      fillnoise8(); // Update the LED array with noise at the new location
+    }
+
+    EVERY_N_SECONDS(5)
+    {  // Change the target palette to a random one every 5 seconds.
+      targetPalette = CRGBPalette16(CHSV(random8(), 255, random8(128,255)), CHSV(random8(), 255, random8(128,255)), CHSV(random8(), 192, random8(128,255)), CHSV(random8(), 255, random8(128,255)));
+    }
+
+    LEDS.show();
+}
+
