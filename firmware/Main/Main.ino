@@ -53,6 +53,7 @@ short potState;
 Timer t;
 int flashEvent;
 int tickEvent;
+int animationEvents[3];
 
 //======== control stuff
 byte colorMode = 0;
@@ -190,6 +191,7 @@ void loop()
   short changedValue;
   bool programChange;
   bool variableChange;
+  byte progNum;
 
   programChange = false;
   variableChange = false;
@@ -265,7 +267,7 @@ void loop()
     }
   }
 
-  if(changedControls & 0b001) //change program.
+  if(changedControls & 0b001) //change program or cycle program mode.
   {
     buttonReg = buttonStates[0] | (buttonStates[1] << 1) | (buttonStates[2] << 2) | (buttonStates[3] << 3);
     buttonReg = ~buttonReg & 0x0F; //invert button logic.
@@ -275,6 +277,8 @@ void loop()
     //if we have pressed another button, change the program.
     if( (buttonReg != 0b0000) && (currentProgram != buttonReg) )
     {
+      Serial.println("change loop");
+      
       currentProgram = buttonReg;
       FastLED.clear();
       FastLED.show();
@@ -283,26 +287,32 @@ void loop()
       switch(currentProgram)
       {
         case 0b0001:
+          progNum = 1;
           OCR1A = 1092; //60Hz refresh.
           break;
 
         case 0b0010:
+          progNum = 2;
           OCR1A = 3276; //20Hz refresh.
           break;
 
         case 0b0100:
+          progNum = 3;
+          break;
+
+        case 0b1000:
+          progNum = 4;
+          break;
+          
         default:
+          progNum = 0;
           break;
       }
+
+      //display program number.
+      lc.setDigit(0,6,progNum,false);
+      lc.setChar(0,7,'p',false);
     }
-
-    //display program number.
-    byte progNum;
-    progNum = (currentProgram/2);
-    if(progNum == 0) progNum = 1;
-
-    lc.setDigit(0,6,progNum,false);
-    lc.setChar(0,7,'p',false);
     
     programChange = true;
   }
@@ -722,7 +732,7 @@ void plasmaInner() // This is the heart of this program. Sure is short. . . and 
 
 void noise(void)
 {
-  EVERY_N_MILLISECONDS(10) 
+    EVERY_N_MILLISECONDS(10) 
     {
       nblendPaletteTowardPalette(currentPalette, targetPalette, maxChanges);  // Blend towards the target palette
       fillnoise8(); // Update the LED array with noise at the new location
