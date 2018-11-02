@@ -57,8 +57,7 @@ int animationEvents[3];
 
 //======== control stuff
 byte colorMode = 0;
-byte smokeFlag = 0;
-uint32_t timerTicksBase, timerTicks1, timerTicks2;
+uint32_t timerTicks1;
 byte currentProgram;
 
 //======== 7-segment stuff
@@ -103,11 +102,8 @@ void setup() {
   
   delay(1000); // sanity delay
 
-  timerTicksBase = 0;
   timerTicks1 = 0;
-  timerTicks2 = 0;
 
-  //pinMode(9, OUTPUT); //heartbeat indicator.
   for(i = 0; i < 4; i++)
   {
     pinMode(toggles[i], INPUT_PULLUP);
@@ -150,6 +146,7 @@ void setup() {
   colorMode = 0;
 
   FastLED.clear();
+  FastLED.show();
 
   dist = random16(12345); // A semi-random number for our noise generator
 
@@ -174,14 +171,7 @@ void setup() {
 ISR(TIMER1_COMPA_vect)
 {
   //top half of ISR.
-  
-  timerTicksBase++;
-
   timerTicks1++;
-
-  if(timerTicksBase == 100) timerTicksBase = 0; //reset timebase.
-  
-  //digitalWrite(9, digitalRead(9) ^ 1); //toggle heartbeat indicator.
 }
 
  
@@ -198,20 +188,22 @@ void loop()
 
   t.update(); //update timer.
 
-  changedControls = getControls(0b111);
+  changedControls = getControls(0b111); //get all control inputs at once.
 
-  if(changedControls & 0b010) //engage selected variable for adjustment.
+  if(changedControls & 0b010) //Toggles: engage selected variable for adjustment.
   {
     toggleReg = toggleStates[0] | (toggleStates[1] << 1) | (toggleStates[2] << 2) | (toggleStates[3] << 3);
     toggleReg = toggleReg & 0x0F;
     Serial.print("toggles=");
     Serial.println(toggleReg, HEX);
+    variableChange = true; //update display.
   }
 
-  if(changedControls & 0b100) //adjust selected variable.
+  if(changedControls & 0b100) //Potentiometer: adjust selected variable.
   {
     Serial.print("pot=");
     Serial.println(potState, HEX);
+    variableChange = true; //update display.
 
     switch(currentProgram)
     {
@@ -222,13 +214,16 @@ void loop()
             brightnessValue = map(potState, 0, 1023, 0, 100); //0-100.
             changedValue = brightnessValue;
             FastLED.setBrightness(brightnessValue);
-            //variableChange = true;
             break;
     
           case 2: //Fire-effect cooling value.
             coolingValue = map(potState, 0, 1023, 0, 255); //0-255.
             changedValue = coolingValue;
-            variableChange = true;
+            break;
+
+          case 3: //Fire-effect sparking value.
+            sparkingValue = map(potState, 0, 1023, 0, 255); //0-255.
+            changedValue = sparkingValue;
             break;
           
           case 0:
@@ -244,7 +239,21 @@ void loop()
               brightnessValue = map(potState, 0, 1023, 0, 100); //0-100.
               changedValue = brightnessValue;
               FastLED.setBrightness(brightnessValue);
-              variableChange = true;
+              break;
+            
+            case 0:
+            default:
+              break;
+          }
+          break;
+
+          case 0b0100: //Noise program.
+          switch(toggleReg)
+          {
+            case 1: //LED brightness.
+              brightnessValue = map(potState, 0, 1023, 0, 100); //0-100.
+              changedValue = brightnessValue;
+              FastLED.setBrightness(brightnessValue);
               break;
             
             case 0:
@@ -256,18 +265,24 @@ void loop()
         default:
           break;
     }
-
-    if(toggleReg)
-    {
-      //update display with adjusted value.
-      lc.setDigit(0,0,(changedValue%10),false);
-      lc.setDigit(0,1,((changedValue/10)%10),false);
-      lc.setDigit(0,2,((changedValue/100)%10),false);
-      lc.setDigit(0,3,(changedValue/1000),false);
-    }
   }
 
-  if(changedControls & 0b001) //change program or cycle program mode.
+  /*NOTE: until a variable is adjusted, the display won't show anything new. I'm too lazy right now to
+    create a 2D array for variables (e.g. variables[currentProgram][switchReg]) and update the pattern
+    generator code to use them, such that the display will be updated always with the current variable
+    value when selected or adjusted. */
+  
+  if(variableChange)
+  {
+    //update display with adjusted value.
+    lc.setDigit(0,0,(changedValue%10),false);
+    lc.setDigit(0,1,((changedValue/10)%10),false);
+    lc.setDigit(0,2,((changedValue/100)%10),false);
+    lc.setDigit(0,3,(changedValue/1000),false);
+    variableChange = false;
+  }
+  
+  if(changedControls & 0b001) //Pushbuttons: change program or cycle program mode.
   {
     buttonReg = buttonStates[0] | (buttonStates[1] << 1) | (buttonStates[2] << 2) | (buttonStates[3] << 3);
     buttonReg = ~buttonReg & 0x0F; //invert button logic.
@@ -283,7 +298,7 @@ void loop()
       FastLED.clear();
       FastLED.show();
       
-      //init program.
+      //init program state when switched.
       switch(currentProgram)
       {
         case 0b0001:
@@ -328,26 +343,21 @@ void loop()
   
       switch(colorMode)
       {
-        case 0: //LEDs off.
-          FastLED.clear();
-          FastLED.show();
-          break;
-  
-        case 1: //Fire.
+        case 0: //Fire.
           coolingValue = 55;
           sparkingValue = 100;
           brightnessValue = 96;
           FastLED.setBrightness(brightnessValue);
           break;
   
-        case 2: //MDMA fire.
+        case 1: //MDMA fire.
           coolingValue = 55;
           sparkingValue = 160;
           brightnessValue = 192;
           FastLED.setBrightness(brightnessValue);
           break;
   
-        case 3: //FREAK OUT
+        case 2: //FREAK OUT
           coolingValue = 55;
           sparkingValue = 192;
           brightnessValue = 255;
@@ -432,14 +442,6 @@ void loop()
     //lightning();
     //plasma();
   } //software timed loop end.
-
-  if(timerTicks2 == 10)
-  {
-    //TODO: update state of indicators?
-
-    timerTicks2 = 0; //reset this timer.
-  }
-
 }
 
 void Fire2012WithPalette()
@@ -503,41 +505,6 @@ void Fire2012WithPalette()
     leds2[pixelnumber] = color; //we hack in a copy of the first strip data into the second strip.
   }
 }
-
-/*
-void lampTest(void)
-{ 
-    int i = 0;
-    toggleValue = 0;
-    
-    for(i = 0; i < 4; i++)
-    {
-      toggleValue |= digitalRead(toggles[i]);
-      toggleValue <<= 1;
-    }
-
-    buttonValue = 0;
-
-    for(i = 0; i < 4; i++)
-    {
-      buttonValue |= digitalRead(buttons[i]);
-      buttonValue <<= 1;
-    }
-  
-    //toggleValue = (Toggle0.read() & 0x01) + (Toggle1.read() << 1) + (Toggle2.read() << 2) + (Toggle3.read() << 3);
-    //buttonValue = Button0.read() + (Button1.read() << 1) + (Button2.read() << 2) + (Button3.read() << 3);
-    buttonLightsValue = 0xFF; //buttonValue;
-    
-    //lc.setDigit(0,0,toggleValue,false);
-    //lc.setDigit(0,1,buttonValue,false);
-
-    for(i = 0; i < 4; i++)
-    {
-      digitalWrite(buttonLights[i], (buttonLightsValue & 0x01));
-      buttonLightsValue >> 1;
-    }
-}
-*/
 
 byte getControls(byte controlsMask)
 {
